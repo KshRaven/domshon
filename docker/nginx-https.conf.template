@@ -1,0 +1,50 @@
+# nginx in front of Domshon with HTTPS (docker compose --profile https).
+# Certificates are read from the certbot volume: /etc/letsencrypt/live/${DS_DOMAIN}/
+# Get them once with the steps in the README ("Docker with HTTPS").
+upstream domshon_backend {
+    server domshon:8787;
+    keepalive 16;
+}
+
+map $http_upgrade $domshon_conn_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DS_DOMAIN};
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://$host$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${DS_DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${DS_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DS_DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:domshon_ssl:10m;
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    client_max_body_size 0;               # Domshon enforces its own limits and quota
+
+    location / {
+        proxy_pass http://domshon_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $domshon_conn_upgrade;
+        proxy_request_buffering off;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}

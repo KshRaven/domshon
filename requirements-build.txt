@@ -1,0 +1,4 @@
+-r requirements-gui.txt
+pyinstaller>=6.3
+build>=1.0
+twine>=5.0

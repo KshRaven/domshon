@@ -1,0 +1,71 @@
+# Server for testing or production.
+#   docker compose up -d --build                      -> http://localhost:8787 (no proxy)
+#   docker compose --profile proxy up -d --build      -> nginx on port 80 in front of Domshon (HTTP)
+#   docker compose --profile https up -d --build      -> nginx on 80/443 with a Let's Encrypt certificate
+#   (one-time certificate steps: README, "Docker with HTTPS")
+#
+# Settings come from .env (copy .env.example). Changes made in the admin panel / CLI are
+# stored in the data volume and apply live; edits to .env need `docker compose up -d`.
+# Behind nginx set DS_DOMAIN=your.domain and DS_TRUST_PROXY=true in .env.
+services:
+  domshon:
+    build: .
+    image: domshon:local
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DS_HOST: 0.0.0.0
+      DS_PORT: "8787"
+      DS_CONFIG_DIR: /data/config
+      DS_STORAGE_ROOT: /data/files
+    ports:
+      - "${DS_BIND:-127.0.0.1}:${DS_PUBLISH_PORT:-8787}:8787"
+    volumes:
+      - domshon-data:/data
+
+  # --- nginx, HTTP only (LAN, another TLS terminator, or step 1 of getting a certificate) ---
+  nginx-http:
+    image: nginx:stable-alpine
+    profiles: ["proxy"]
+    restart: unless-stopped
+    depends_on:
+      - domshon
+    environment:
+      DS_DOMAIN: ${DS_DOMAIN:-_}
+    ports:
+      - "80:80"
+    volumes:
+      - ./docker/nginx-http.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - certbot-www:/var/www/certbot:ro
+
+  # --- nginx with HTTPS ---
+  nginx:
+    image: nginx:stable-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    depends_on:
+      - domshon
+    environment:
+      DS_DOMAIN: ${DS_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx-https.conf.template:/etc/nginx/templates/default.conf.template:ro
+      - certbot-www:/var/www/certbot:ro
+      - letsencrypt:/etc/letsencrypt:ro
+
+  # --- certificate tool, only run on demand (see README) ---
+  certbot:
+    image: certbot/certbot
+    profiles: ["certbot"]
+    volumes:
+      - certbot-www:/var/www/certbot
+      - letsencrypt:/etc/letsencrypt
+
+volumes:
+  domshon-data:
+  certbot-www:
+  letsencrypt:

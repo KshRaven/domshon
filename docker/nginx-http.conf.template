@@ -1,0 +1,38 @@
+# nginx in front of Domshon, plain HTTP on port 80 (docker compose --profile proxy).
+# Use it on a LAN, behind another TLS terminator (Cloudflare, a load balancer), or as the
+# first step to get a Let's Encrypt certificate (it serves the ACME challenge folder).
+# The official nginx image fills in ${DS_DOMAIN} from the environment at start-up.
+upstream domshon_backend {
+    server domshon:8787;
+    keepalive 16;
+}
+
+map $http_upgrade $domshon_conn_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${DS_DOMAIN};
+
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+
+    client_max_body_size 0;               # Domshon enforces its own limits and quota
+
+    location / {
+        proxy_pass http://domshon_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;               # live updates (WebSocket)
+        proxy_set_header Connection $domshon_conn_upgrade;
+        proxy_request_buffering off;                          # stream uploads to the app
+        proxy_buffering off;                                  # stream downloads
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+}

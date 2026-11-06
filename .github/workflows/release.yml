@@ -1,0 +1,175 @@
+name: Release
+
+# Push a tag like v0.1.0 to build the desktop/CLI apps for Windows, Linux and macOS (macOS is best
+# effort: a failed macOS build never blocks the release), attach them to a
+# GitHub Release, publish the Python package and push the server image.
+# Manual runs ("Run workflow") build the apps and keep them as workflow artifacts only.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      server_url:
+        description: "Default server address baked into the apps (optional)"
+        required: false
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write
+
+env:
+  # Repository variable (Settings > Secrets and variables > Actions > Variables).
+  BAKED_SERVER: ${{ github.event.inputs.server_url || vars.DS_BUILD_SERVER }}
+
+jobs:
+  apps:
+    name: Build apps (${{ matrix.os }})
+    continue-on-error: ${{ matrix.experimental == true }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+          - os: ubuntu-24.04-arm    # Linux ARM64; best effort, never blocks the release
+            experimental: true
+          - os: windows-latest
+          - os: macos-latest        # Apple Silicon; best effort, never blocks the release
+            experimental: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Linux libraries needed by Qt
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libgl1 libxkbcommon-x11-0 libxcb-cursor0 libdbus-1-3 libfontconfig1
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[gui,build]"
+      - name: Build
+        shell: bash
+        run: |
+          if [ -n "$BAKED_SERVER" ]; then
+            python scripts/build.py --package --server "$BAKED_SERVER"
+          else
+            python scripts/build.py --package
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apps-${{ runner.os }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  android:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    continue-on-error: true          # never blocks the desktop release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Optional release keystore (repository secrets)
+        shell: bash
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/domshon.jks"
+            echo "DS_KEYSTORE_FILE=$RUNNER_TEMP/domshon.jks" >> "$GITHUB_ENV"
+          fi
+      - name: Build APK
+        shell: bash
+        env:
+          DS_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          DS_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          DS_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          VER=$(grep -oP '__version__\s*=\s*"\K[^"]+' src/domshon/__init__.py)
+          gradle -p android --no-daemon assembleRelease ${BAKED_SERVER:+-PdsServer="$BAKED_SERVER"}
+          mkdir -p dist
+          cp android/app/build/outputs/apk/release/app-release.apk "dist/domshon-$VER-android.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apps-Android
+          path: dist/*.apk
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: [apps, android]
+    if: ${{ always() && startsWith(github.ref, 'refs/tags/v') && needs.apps.result != 'failure' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: assets/*
+          generate_release_notes: true
+
+  python-package:
+    name: Python package
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: apps
+    runs-on: ubuntu-latest
+    environment: pypi
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: |
+          python -m pip install --upgrade build
+          python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: python-dist
+          path: dist/*
+      # Uses PyPI "trusted publishing" (no token stored). Configure it once on pypi.org for this repo,
+      # or remove this step and attach dist/* to the release instead.
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  docker:
+    name: Server image
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: apps
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

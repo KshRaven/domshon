@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "domshon"
+version = "0.1.0"
+description = "Domshon - self-hosted cloud file manager with cross-platform sync (server, web, desktop, CLI)"
+readme = "src/domshon/README.md"
+requires-python = ">=3.10"
+keywords = ["file manager", "sync", "cloud storage", "self-hosted"]
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "httpx>=0.26",
+  "platformdirs>=4.0",
+  "python-dotenv>=1.0",
+]
+
+# What you get from each install:
+#   pip install domshon            server + command line (domshon / ds) + the Python package   <- servers,
+#                                  new systems, scripts; no Qt is installed
+#   pip install "domshon[gui]"     + the desktop app (domshon-gui) with its launcher, icon and tray
+#   pip install "domshon[winservice]"  + Windows Service support for the server (Windows only)
+#   [dev] and [build] are for working on Domshon itself (tests, lint, PyInstaller, PyPI upload)
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+winservice = ["pywin32>=306; sys_platform == 'win32'"]
+build = ["pyinstaller>=6.3", "build>=1.0", "twine>=5.0"]
+dev = ["pytest>=8", "ruff"]
+
+[project.scripts]
+domshon = "domshon.cli:main"
+ds = "domshon.cli:main"
+
+[project.gui-scripts]
+domshon-gui = "domshon.gui:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+domshon = ["server/web/*", "_build_defaults.json"]

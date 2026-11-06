@@ -1,0 +1,52 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+// Version comes from the Python package so every platform shares one number.
+def pyVersion = "0.1.0"
+def m = file("../../src/domshon/__init__.py").text =~ /__version__\s*=\s*"([^"]+)"/
+if (m.find()) pyVersion = m.group(1)
+def vparts = pyVersion.tokenize('.').collect { it.replaceAll(/\D.*/, '') ?: '0' }.collect { it as int }
+def vcode = (vparts[0] ?: 0) * 10000 + (vparts.size() > 1 ? vparts[1] : 0) * 100 + (vparts.size() > 2 ? vparts[2] : 0)
+
+android {
+    namespace 'com.domshon.app'
+    compileSdk 34
+    defaultConfig {
+        applicationId 'com.domshon.app'
+        minSdk 24
+        targetSdk 34
+        versionCode Math.max(vcode, 1)
+        versionName pyVersion
+        // Optional default server: ./gradlew assembleRelease -PdsServer=https://files.example.com
+        buildConfigField 'String', 'DEFAULT_SERVER', '"' + (project.findProperty('dsServer') ?: System.getenv('DS_BUILD_SERVER') ?: '') + '"'
+    }
+    buildFeatures { buildConfig true }
+    signingConfigs {
+        // Release signing only when a keystore is supplied (CI secrets); otherwise the debug key is used
+        // so the APK is always installable (sideload).
+        if (System.getenv('DS_KEYSTORE_FILE')) {
+            release {
+                storeFile file(System.getenv('DS_KEYSTORE_FILE'))
+                storePassword System.getenv('DS_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('DS_KEY_ALIAS')
+                keyPassword System.getenv('DS_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig System.getenv('DS_KEYSTORE_FILE') ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    kotlinOptions { jvmTarget = '17' }
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.appcompat:appcompat:1.7.0'
+    implementation 'androidx.swiperefreshlayout:swiperefreshlayout:1.1.0'
+}

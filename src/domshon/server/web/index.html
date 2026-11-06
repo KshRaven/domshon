@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Domshon</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpolygon points='32,4 58,18 58,46 32,60 6,46 6,18' fill='none' stroke='%2300f0ff' stroke-width='5'/%3E%3Ccircle cx='32' cy='32' r='7' fill='%23ff2bd6'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/static/theme.css">
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="bg"><i class="blob b1"></i><i class="blob b2"></i><i class="grid"></i></div>
+
+<!-- LOGIN -->
+<main id="login" class="center hidden">
+  <form id="loginForm" class="glass login" autocomplete="on">
+    <div class="brand big">
+      <svg viewBox="0 0 64 64" width="44" height="44"><polygon points="32,4 58,18 58,46 32,60 6,46 6,18" fill="none" stroke="#00f0ff" stroke-width="4"/><circle cx="32" cy="32" r="7" fill="#ff2bd6"/></svg>
+      <span>DOM<b>SHON</b></span>
+    </div>
+    <p class="muted">Secure cloud file manager</p>
+    <div id="credFields">
+      <label>Username<input id="lUser" name="username" autocomplete="username" value="admin"></label>
+      <label>Password<input id="lPass" name="password" type="password" autocomplete="current-password"></label>
+    </div>
+    <div id="tokenField" class="hidden">
+      <label>API token<input id="lToken" placeholder="dst_..." autocomplete="off"></label>
+    </div>
+    <label class="check"><input type="checkbox" id="lRemember"> Remember this browser</label>
+    <button class="btn primary" type="submit">AUTHENTICATE</button>
+    <button class="btn link" type="button" id="toggleMode">Use an API token instead</button>
+    <p id="loginErr" class="err"></p>
+  </form>
+</main>
+
+<!-- APP -->
+<div id="app" class="hidden">
+  <header class="glass bar">
+    <div class="brand">
+      <svg viewBox="0 0 64 64" width="26" height="26"><polygon points="32,4 58,18 58,46 32,60 6,46 6,18" fill="none" stroke="#00f0ff" stroke-width="5"/><circle cx="32" cy="32" r="7" fill="#ff2bd6"/></svg>
+      <span>DOM<b>SHON</b></span>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="files">FILES</button>
+      <button class="tab hidden" data-view="admin" id="adminTab">ADMIN</button>
+    </nav>
+    <div class="spacer"></div>
+    <span id="live" class="pill off" title="Live updates">● OFFLINE</span>
+    <button class="btn small" id="btnSettings" title="Settings">⚙ SETTINGS</button>
+    <button class="btn small" id="btnAccount" title="Account">◉ <span id="who">ACCOUNT</span></button>
+  </header>
+
+  <section id="viewFiles" class="view">
+    <div class="glass panel">
+      <div class="toolbar">
+        <select id="rootSel" title="Server folder"></select>
+        <div id="crumbs" class="crumbs"></div>
+        <div class="spacer"></div>
+        <button class="btn small" id="btnUpload">↑ UPLOAD FILES</button>
+        <button class="btn small" id="btnUploadDir">↑ UPLOAD FOLDER</button>
+        <button class="btn small" id="btnMkdir">+ NEW FOLDER</button>
+        <button class="btn small" id="btnRefresh">⟳</button>
+        <span id="usage" class="muted small" title="Cloud storage used"></span>
+        <input type="file" id="fileInput" multiple class="hidden">
+        <input type="file" id="dirInput" webkitdirectory class="hidden">
+      </div>
+      <div class="tablewrap">
+        <table>
+          <thead><tr><th>NAME</th><th class="r">SIZE</th><th>MODIFIED</th><th class="r">ACTIONS</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <p id="empty" class="muted center-text hidden">Empty. Drag &amp; drop files or folders anywhere on this page.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="viewAdmin" class="view hidden">
+    <div class="grid2">
+      <div class="glass panel">
+        <h3>LIVE SETTINGS</h3>
+        <p class="muted small">Applied instantly. Host/port changes need a server restart.</p>
+        <form id="settingsForm" class="form"></form>
+        <div id="disk" class="muted small"></div>
+        <h3>STORAGE</h3>
+        <div id="storage" class="small"></div>
+      </div>
+      <div class="glass panel">
+        <h3>DEVICE TOKENS</h3>
+        <form id="tokForm" class="row">
+          <input id="tokName" placeholder="device name e.g. laptop">
+          <button class="btn small" type="submit">CREATE</button>
+        </form>
+        <div id="newTok" class="mono small hidden"></div>
+        <table class="mini"><tbody id="tokRows"></tbody></table>
+        <h3>DANGER ZONE</h3>
+        <button class="btn small danger" id="rotate">ROTATE SECRET (logs out all sessions)</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- ACCOUNT -->
+<dialog id="dlgAccount" class="glass dlg">
+  <h3>ACCOUNT</h3>
+  <dl class="kv" id="acctInfo"></dl>
+  <div id="acctAdmin" class="hidden">
+    <h3>ADMIN PASSWORD</h3>
+    <form id="pwForm" class="form">
+      <label>New password (min 10 chars)<input id="newPw" type="password" autocomplete="new-password"></label>
+      <button class="btn small" type="submit">CHANGE PASSWORD</button>
+    </form>
+  </div>
+  <p id="acctNote" class="muted small hidden">Device tokens are created and revoked by the server admin.</p>
+  <div class="row end">
+    <button class="btn small danger" id="logout" type="button">LOGOUT</button>
+    <button class="btn small" type="button" data-close>CLOSE</button>
+  </div>
+</dialog>
+
+<!-- SETTINGS (stored in this browser only) -->
+<dialog id="dlgSettings" class="glass dlg">
+  <h3>SETTINGS</h3>
+  <p class="muted small">These preferences are saved in this browser only.</p>
+  <form id="prefForm" class="form" onsubmit="return false">
+    <label class="check"><input type="checkbox" id="pConfirm"> Confirm before deleting</label>
+    <label class="check"><input type="checkbox" id="pIso"> Show dates in ISO format</label>
+    <label class="check"><input type="checkbox" id="pCalm"> Reduce background effects</label>
+    <label>Parallel uploads
+      <select id="pPar"><option>1</option><option>2</option><option>3</option><option>4</option><option>5</option><option>6</option></select>
+    </label>
+  </form>
+  <button class="btn small hidden" id="btnServerSettings" type="button">SERVER SETTINGS (ADMIN)</button>
+  <div class="row end">
+    <button class="btn small" type="button" data-close>CLOSE</button>
+  </div>
+</dialog>
+
+<!-- FILE EDITOR -->
+<dialog id="dlgEdit" class="glass dlg edit sticky">
+  <div class="edhead">
+    <span id="edName" class="edname"></span><span id="edDirty" class="hidden" title="Unsaved changes">●</span>
+    <span class="grow"></span>
+    <button class="btn small" id="edWrap" type="button">WRAP</button>
+    <button class="btn small primary" id="edSave" type="button">SAVE</button>
+    <button class="btn small" id="edClose" type="button">CLOSE</button>
+  </div>
+  <textarea id="edText" spellcheck="false" wrap="off" autocomplete="off" autocapitalize="off"></textarea>
+  <div class="edstat"><span id="edPos">Ln 1, Col 1</span><span id="edInfo" class="muted"></span></div>
+</dialog>
+
+<!-- generic in-page dialog (replaces the browser's alert / confirm / prompt) -->
+<dialog id="dlgAsk" class="glass dlg">
+  <form id="askForm" autocomplete="off">
+    <h3 id="askTitle"></h3>
+    <p id="askMsg" class="askmsg"></p>
+    <label id="askLabel" class="hidden"><span id="askLabelText"></span><input id="askInput" autocomplete="off" spellcheck="false"></label>
+    <p id="askErr" class="err"></p>
+    <div class="row end">
+      <button class="btn small" type="button" id="askCancel">CANCEL</button>
+      <button class="btn small danger hidden" type="button" id="askExtra"></button>
+      <button class="btn small primary" type="submit" id="askOk">OK</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="drop" class="dropzone hidden"><div>⇪ DROP TO UPLOAD<small>files and folders</small></div></div>
+<div id="queue" class="glass queue hidden"></div>
+<div id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
