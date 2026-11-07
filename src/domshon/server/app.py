@@ -112,7 +112,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         bootstrap_admin(settings)
-        settings.storage_root()
+        try:
+            settings.storage_root()
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot create the storage folder ({exc}). The service runs as an unprivileged user: point "
+                "DS_STORAGE_ROOT at a folder it can write (e.g. /var/lib/domshon/files), or give it ownership: "
+                "sudo chown -R domshon:domshon <folder>. Folders under /home are not writable for the service.") from exc
         yield
 
     app = FastAPI(title=APP_NAME, version=__version__, lifespan=lifespan,
@@ -233,7 +239,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def password_ok(username: str, password: str) -> bool:
         stored = settings.get("admin_password_hash")
         plain = settings.get("admin_password")
-        pw_ok = verify_password(password, stored) if stored else (bool(plain) and ct_eq(password, plain))
+        # A plain DS_ADMIN_PASSWORD in .env / the environment is the owner's explicit choice and wins over an
+        # older generated hash (otherwise editing .env after the first start silently does nothing).
+        if plain:
+            pw_ok = ct_eq(password, plain)
+        else:
+            pw_ok = bool(stored) and verify_password(password, stored)
         return bool(ct_eq(username, settings.get("admin_user")) and pw_ok)
 
     @app.post("/api/auth/login")

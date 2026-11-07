@@ -102,7 +102,10 @@ def cmd_server(a):
         if len(pw) < 10:
             die("password too short")
         s.set_internal("admin_password_hash", hash_password(pw))
-        print("Admin password updated.")
+        print("Admin password updated." + (f"\n(config folder: {s.dir})" if s.dir else ""))
+        if s.get("admin_password"):
+            print("WARNING: DS_ADMIN_PASSWORD is set in .env / the environment and takes precedence over this "
+                  "password. Clear that line to use the new one.")
         return
     if a.sub == "token":
         ts = TokenStore(s.dir / "tokens.json")
