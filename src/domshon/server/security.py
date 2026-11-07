@@ -19,6 +19,7 @@ from fastapi import HTTPException
 class Principal:
     role: str  # "admin" | "user"
     name: str
+    read_only: bool = False     # read-only device token: may list/download but never change files
 
 
 def b64e(b: bytes) -> str:
@@ -96,12 +97,12 @@ class TokenStore:
             pass
         os.replace(tmp, self.path)
 
-    def create(self, name: str) -> tuple[str, str]:
+    def create(self, name: str, read_only: bool = False) -> tuple[str, str]:
         tid, sec = secrets.token_hex(4), secrets.token_urlsafe(32)
         with self.lock:
             data = self._load()
             data[tid] = {"name": name, "hash": hashlib.sha256(sec.encode()).hexdigest(),
-                         "created": int(time.time())}
+                         "created": int(time.time()), "read_only": bool(read_only)}
             self._save(data)
         return tid, f"dst_{tid}_{sec}"
 
@@ -112,11 +113,53 @@ class TokenStore:
             return None
         rec = self._load().get(tid)
         if rec and hmac.compare_digest(rec["hash"], hashlib.sha256(sec.encode()).hexdigest()):
-            return rec
+            return {**rec, "id": tid}
         return None
 
+    _seen: dict = {}          # tid -> last time we wrote to disk (throttle)
+
+    def touch(self, tid: str, ip: str = "", agent: str = "", force: bool = False):
+        """Record that a device token was just used (writes to disk at most every 20s per token)."""
+        now = time.time()
+        if not force and now - self._seen.get(tid, 0) < 20:
+            return
+        with self.lock:
+            data = self._load()
+            rec = data.get(tid)
+            if not rec:
+                return
+            rec["last_seen"] = int(now)
+            if ip:
+                rec["last_ip"] = ip[:64]
+            if agent:
+                rec["agent"] = agent[:160]
+            rec["requests"] = int(rec.get("requests", 0)) + 1
+            try:
+                self._save(data)
+            except OSError:
+                return
+            self._seen[tid] = now
+
     def list(self) -> list[dict]:
-        return [{"id": k, "name": v["name"], "created": v["created"]} for k, v in self._load().items()]
+        return [{"id": k, "name": v["name"], "created": v["created"],
+                 "last_seen": v.get("last_seen", 0), "last_ip": v.get("last_ip", ""),
+                 "agent": v.get("agent", ""), "read_only": bool(v.get("read_only"))}
+                for k, v in self._load().items()]
+
+    def devices(self, online_window: int = 150, live_ids: set | None = None) -> dict:
+        """Connected devices + the most recently connected one, newest first."""
+        now = time.time()
+        live_ids = live_ids or set()
+        out = []
+        for d in self.list():
+            seen = d["last_seen"]
+            d["online"] = d["id"] in live_ids or (seen and now - seen <= online_window)
+            d["live"] = d["id"] in live_ids
+            d["ago"] = int(now - seen) if seen else None
+            out.append(d)
+        out.sort(key=lambda d: d["last_seen"], reverse=True)
+        last = out[0] if out and out[0]["last_seen"] else None
+        return {"devices": out, "online": sum(1 for d in out if d["online"]), "total": len(out), "last": last}
 
     def revoke(self, tid: str) -> bool:
         with self.lock:
@@ -126,6 +169,80 @@ class TokenStore:
             del data[tid]
             self._save(data)
             return True
+
+
+def agent_label(ua: str) -> str:
+    """Human label for a User-Agent: 'Android app', 'Web browser (Windows)', 'Desktop / CLI'..."""
+    ua = ua or ""
+    if "DomshonAndroid" in ua:
+        return "Android app"
+    if "httpx" in ua.lower() or "python" in ua.lower():
+        return "Desktop / CLI (admin)"
+    for key, os_ in (("Android", "Android"), ("iPhone", "iOS"), ("iPad", "iOS"), ("Windows", "Windows"),
+                     ("Mac OS", "macOS"), ("Linux", "Linux"), ("X11", "Linux")):
+        if key in ua:
+            return f"Web browser ({os_})"
+    return "Web browser" if ua else "Unknown client"
+
+
+class Presence:
+    """Admin-session devices (web browser, Android app, desktop app, CLI): in-memory + small JSON file so the
+    'last connected device' survives restarts. Device tokens are tracked by TokenStore instead."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.lock = threading.Lock()
+        self.rec: dict[str, dict] = {}
+        self._written = 0.0
+        try:
+            self.rec = json.loads(path.read_text("utf-8"))
+        except (OSError, ValueError):
+            self.rec = {}
+
+    def touch(self, sid: str, ip: str = "", agent: str = "", force: bool = False):
+        now = time.time()
+        with self.lock:
+            r = self.rec.setdefault(sid, {"first": int(now), "requests": 0})
+            r.update(last_seen=int(now), last_ip=(ip or r.get("last_ip", ""))[:64],
+                     agent=(agent or r.get("agent", ""))[:160])
+            r["requests"] = r.get("requests", 0) + 1
+            if force or now - self._written > 20:
+                cutoff = now - 30 * 86400
+                for k in [k for k, v in self.rec.items() if v.get("last_seen", 0) < cutoff]:
+                    del self.rec[k]
+                if len(self.rec) > 60:
+                    for k in sorted(self.rec, key=lambda k: self.rec[k].get("last_seen", 0))[:-60]:
+                        del self.rec[k]
+                try:
+                    tmp = self.path.with_suffix(".tmp")
+                    tmp.write_text(json.dumps(self.rec), "utf-8")
+                    os.replace(tmp, self.path)
+                    self._written = now
+                except OSError:
+                    pass
+
+    def devices(self, live: set, current: str = "", window: int = 150) -> list[dict]:
+        now = time.time()
+        out = []
+        for sid, r in self.rec.items():
+            seen = r.get("last_seen", 0)
+            label = agent_label(r.get("agent", ""))
+            out.append({"id": "s_" + sid, "name": label + (" (this device)" if sid == current else ""),
+                        "created": r.get("first", seen), "last_seen": seen, "last_ip": r.get("last_ip", ""),
+                        "agent": r.get("agent", ""), "read_only": False, "session": True,
+                        "current": sid == current, "live": sid in live,
+                        "online": sid in live or bool(seen and now - seen <= window),
+                        "ago": int(now - seen) if seen else None})
+        return out
+
+
+def merge_devices(tokens_view: dict, sessions: list[dict]) -> dict:
+    """Combine token devices and admin-session devices; 'last' ignores the viewer's own session."""
+    devs = tokens_view["devices"] + sessions
+    devs.sort(key=lambda d: d["last_seen"], reverse=True)
+    others = [d for d in devs if d["last_seen"] and not d.get("current")]
+    return {"devices": devs, "online": sum(1 for d in devs if d["online"]), "total": len(devs),
+            "last": others[0] if others else None}
 
 
 class RateLimiter:

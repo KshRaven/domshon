@@ -85,9 +85,15 @@
         <div id="storage" class="small"></div>
       </div>
       <div class="glass panel">
+        <h3>CONNECTED DEVICES <span id="devCount" class="pill off">0 online</span></h3>
+        <div id="lastDev" class="small muted">No device has connected yet.</div>
+        <table class="mini"><tbody id="devRows"></tbody></table>
+      </div>
+      <div class="glass panel">
         <h3>DEVICE TOKENS</h3>
         <form id="tokForm" class="row">
           <input id="tokName" placeholder="device name e.g. laptop">
+          <label class="check small"><input type="checkbox" id="tokRO"> read-only</label>
           <button class="btn small" type="submit">CREATE</button>
         </form>
         <div id="newTok" class="mono small hidden"></div>

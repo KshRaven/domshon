@@ -5,7 +5,7 @@ Self-hosted cloud file manager with cross-platform folder synchronisation.
 - **Server** (Python / FastAPI) with its own admin web panel, admin desktop tab and admin CLI
 - **Web app** with drag & drop for files and folders
 - **Desktop app** for Windows and Linux (system tray, notifications, launch on boot)
-- **Terminal interface** (`domshon` / `ds`)
+- **Terminal interface** (`domshon` / `ds`): run it with no arguments for the full-screen menu app (arrow keys, numbers, Enter, Esc; 0 = back; wrap-around paging) or use the normal commands (`domshon --help`, `domshon help sync add`)
 - **Python package**: `import domshon` to pull / push / sync project files from your own code
 - **Android app**: a WebView client for the server web app, with native upload and download handling
 

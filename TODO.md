@@ -4,24 +4,34 @@ Pending / deferred work. Nothing here is required for the current feature set.
 
 ## Planned
 
-- [ ] **Android app** (deferred by request). The server API in `server/app.py` is already everything it
-      needs: bearer device tokens, `/api/manifest`, `/api/files`, `/api/download`, WebSocket `/ws`.
-      Suggested route: Kotlin client reusing the three-way sync algorithm of `client/sync.py`, with a
-      foreground service for background sync.
-- [ ] **User themes**: `theme.py` is the single source of design tokens for web and desktop. Add a theme
-      folder (`themes/*.json`) loaded at start-up plus a picker in Settings.
+- [ ] **Native Android sync client** (Kotlin, foreground service reusing the three-way algorithm of
+      `client/sync.py`). The shipped Android app is a WebView shell around the web app (files, editor,
+      admin panel and device monitor all work); only background folder sync is missing.
+- [ ] **Theme picker** UI. Done: `theme.json` in the config folder (or `DS_THEME_FILE`) overrides colour tokens
+      for web, desktop and terminal app. Missing: a picker in Settings and bundled `themes/*.json`.
 - [ ] **Multiple users / per-user folders and per-user quotas**: today there is one admin account plus
       device tokens (`quota_mb` is global).
-- [ ] **Per-device permissions** on tokens (read-only tokens, folder-restricted tokens); today
-      `user_writes` is all-or-nothing for non-admin tokens.
+- [ ] **Folder-restricted tokens**. Done: read-only tokens (`--read-only`, web checkbox). Missing: tokens limited
+      to one folder.
 - [ ] **Delta transfer** (block hashing) for large files; today whole files are transferred.
-- [ ] **Trash / versions** on the server for deleted or overwritten files.
-- [ ] **File-system watcher** for instant local change detection (currently interval polling).
+- [ ] **Trash / versions** on the server for deleted or overwritten files (needs the manifest and sync to ignore
+      the trash folder).
+- [ ] **File-system watcher** for instant local change detection (currently interval polling; needs `watchdog`).
 - [ ] **Code signing** (Windows) and **signing + notarisation** (macOS); releases are unsigned.
 - [ ] **macOS Intel build** and a boot-time LaunchDaemon (today: Apple Silicon `.app`, per-login LaunchAgent).
-- [ ] **More tests**: `client/sync.py` conflict handling and the GUI (`tests/test_core.py` covers quotas,
-      extension rules, path safety and auth on the server API).
+- [ ] **More tests**: `client/sync.py` conflict handling and the GUI. Covered now: quotas, extension rules, path
+      safety, server auth, device monitor, session presence, read-only tokens, terminal app helpers/frame width.
+- [ ] **Terminal app extras**: mouse support, a live sync-profile editor, per-token read-only toggle in the menu.
 - [ ] **LICENSE**: choose one before publishing the repository (a decision for the owner).
+
+## Done recently
+
+- Device monitoring (connected devices + last connected device) on the server, web admin panel (also inside the
+  Android app), desktop app, terminal app and CLI (`domshon server devices`, `domshon admin devices`).
+- Interactive terminal app (`domshon` / `ds` / `domshon tui`) with paged menus, wrap-around scrolling, Esc to stop
+  processes; plain commands unchanged (`domshon --help`, `domshon help CMD`).
+- Esc also stops `server serve`, `daemon` and `sync watch` in plain CLI mode.
+- Console output never crashes on legacy Windows code pages.
 
 ## Known gaps / not yet verified
 

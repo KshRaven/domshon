@@ -21,7 +21,7 @@ from ..common.scan import ignored, scan_tree
 from ..config import Settings
 from .mfa import MfaStore, SmsError
 from .quota import MB, UsageCache, breakdown, check_space, disk_info
-from .security import (Principal, RateLimiter, TokenStore, ct_eq, hash_password, sign, unsign,
+from .security import (Presence, Principal, RateLimiter, TokenStore, merge_devices, ct_eq, hash_password, sign, unsign,
                        verify_password)
 
 WEB_DIR = Path(__file__).parent / "web"
@@ -81,11 +81,13 @@ class PasswordBody(BaseModel):
 
 class TokenBody(BaseModel):
     name: str
+    read_only: bool = False
 
 
 class Hub:
     def __init__(self):
         self.clients: set[WebSocket] = set()
+        self.meta: dict[WebSocket, dict] = {}
 
     async def broadcast(self, msg: dict):
         dead = []
@@ -101,6 +103,7 @@ class Hub:
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     tokens = TokenStore(settings.dir / "tokens.json")
+    presence = Presence(settings.dir / "presence.json")
     limiter = RateLimiter()
     mfa = MfaStore(settings.dir / "mfa.json")
     hub = Hub()
@@ -129,6 +132,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             h["Cache-Control"] = "no-cache"
         return resp
 
+    def sid_of(token: str) -> str:
+        import hashlib
+        return hashlib.sha256(token.encode()).hexdigest()[:8]
+
     # ---- auth dependencies ---------------------------------------------------
     def authenticate(request: Request) -> Principal:
         settings.reload()
@@ -138,15 +145,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if token.startswith("dst_"):
             rec = tokens.verify(token)
             if rec:
-                pr = Principal("user", rec["name"])
+                pr = Principal("user", rec["name"], bool(rec.get("read_only")))
+                tokens.touch(rec["id"], request.client.host if request.client else "",
+                             request.headers.get("user-agent", ""))
         elif token:
             data = unsign(settings.secret(), token)
             if data and data.get("typ") == "session":
                 pr = Principal("admin", settings.get("admin_user"))
+                presence.touch(sid_of(token), request.client.host if request.client else "",
+                               request.headers.get("user-agent", ""))
         elif request.method == "GET" and request.query_params.get("ticket"):
             data = unsign(settings.secret(), request.query_params["ticket"])
             if data and data.get("typ") == "ticket":
-                pr = Principal(data.get("role", "user"), data.get("name", ""))
+                pr = Principal(data.get("role", "user"), data.get("name", ""), bool(data.get("ro")))
         if pr is None:
             raise HTTPException(401, "Unauthorized", headers={"WWW-Authenticate": "Bearer"})
         if settings.get("lockdown") and pr.role != "admin":
@@ -156,6 +167,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def writer(pr: Principal = Depends(authenticate)) -> Principal:
         if settings.get("read_only"):
             raise HTTPException(403, "Server is in read-only mode")
+        if pr.read_only:
+            raise HTTPException(403, "This device token is read-only")
         if pr.role != "admin" and not settings.get("user_writes"):
             raise HTTPException(403, "Only the admin may change files on this server")
         return pr
@@ -278,8 +291,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "domain": settings.get("domain"), "version": __version__}
 
     @app.get("/api/ticket")
-    def ticket(pr: Principal = Depends(authenticate)):
+    def ticket(request: Request, pr: Principal = Depends(authenticate)):
+        tid = sid = ""
+        hdr = request.headers.get("authorization", "")[7:].strip()
+        if hdr.startswith("dst_"):
+            parts = hdr.split("_", 2)
+            tid = parts[1] if len(parts) == 3 else ""
+        elif hdr:
+            sid = sid_of(hdr)
         return {"ticket": sign(settings.secret(), {"typ": "ticket", "role": pr.role, "name": pr.name,
+                                                   "tid": tid, "sid": sid, "ro": pr.read_only,
                                                    "exp": time.time() + 60})}
 
     @app.get("/api/usage")
@@ -528,14 +549,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/admin/tokens")
     def tokens_create(body: TokenBody, pr: Principal = Depends(admin_only)):
-        tid, tok = tokens.create(body.name.strip()[:64] or "device")
-        return {"id": tid, "token": tok}
+        tid, tok = tokens.create(body.name.strip()[:64] or "device", body.read_only)
+        return {"id": tid, "token": tok, "read_only": body.read_only}
 
     @app.delete("/api/admin/tokens/{tid}")
     def tokens_revoke(tid: str, pr: Principal = Depends(admin_only)):
         if not tokens.revoke(tid):
             raise HTTPException(404, "No such token")
         return {"ok": True}
+
+    @app.get("/api/admin/devices")
+    def devices_list(request: Request, pr: Principal = Depends(admin_only)):
+        live = {m.get("tid") for m in hub.meta.values() if m.get("tid")}
+        live_s = {m.get("sid") for m in hub.meta.values() if m.get("sid")}
+        hdr = request.headers.get("authorization", "")[7:].strip()
+        cur = sid_of(hdr) if hdr and not hdr.startswith("dst_") else ""
+        return merge_devices(tokens.devices(live_ids=live), presence.devices(live_s, cur))
 
     @app.post("/api/admin/rotate-secret")
     def rotate(pr: Principal = Depends(admin_only)):
@@ -622,13 +651,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return
         await socket.accept()
         hub.clients.add(socket)
+        hub.meta[socket] = {"tid": data.get("tid", ""), "sid": data.get("sid", ""), "name": data.get("name", "")}
+        if data.get("sid"):
+            presence.touch(data["sid"], socket.client.host if socket.client else "", "websocket", force=True)
+        if data.get("tid"):
+            tokens.touch(data["tid"], socket.client.host if socket.client else "", "websocket", force=True)
         try:
             while True:
                 await socket.receive_text()
+                if data.get("tid"):
+                    tokens.touch(data["tid"])
         except WebSocketDisconnect:
+            pass
+        except Exception:
             pass
         finally:
             hub.clients.discard(socket)
+            hub.meta.pop(socket, None)
+            if data.get("tid"):
+                tokens.touch(data["tid"], force=True)
 
     app.mount("/static", StaticFiles(directory=str(WEB_DIR)), name="static")
     return app

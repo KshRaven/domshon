@@ -124,11 +124,14 @@ class Client:
     def admin_tokens(self) -> list[dict]:
         return self._req("GET", "/api/admin/tokens").json()["tokens"]
 
-    def admin_token_create(self, name: str) -> dict:
-        return self._req("POST", "/api/admin/tokens", json={"name": name}).json()
+    def admin_token_create(self, name: str, read_only: bool = False) -> dict:
+        return self._req("POST", "/api/admin/tokens", json={"name": name, "read_only": read_only}).json()
 
     def admin_token_revoke(self, tid: str):
         self._req("DELETE", f"/api/admin/tokens/{tid}")
 
     def admin_rotate(self) -> str:
         return self._req("POST", "/api/admin/rotate-secret").json()["token"]
+
+    def admin_devices(self) -> dict:
+        return self._req("GET", "/api/admin/devices").json()

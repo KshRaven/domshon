@@ -27,6 +27,36 @@ TOKENS = {
 }
 
 
+def _load_user_theme() -> None:
+    """Optional overrides: <config dir>/theme.json (or the file named by DS_THEME_FILE), e.g.
+    {"cyan": "#33ccff", "magenta": "#ff66cc"}. Only known keys with valid values are applied."""
+    import json
+    import os
+    import re
+    from pathlib import Path
+    try:
+        path = os.environ.get("DS_THEME_FILE")
+        if not path:
+            from platformdirs import user_config_dir
+            path = str(Path(user_config_dir("domshon")) / "theme.json")
+        data = json.loads(Path(path).read_text("utf-8"))
+    except Exception:
+        return
+    if not isinstance(data, dict):
+        return
+    for key, val in data.items():
+        if key not in TOKENS or not isinstance(val, str) or len(val) > 200:
+            continue
+        if TOKENS[key].startswith("#") and not re.fullmatch(r"#[0-9a-fA-F]{6}", val):
+            continue
+        if re.search(r"[;{}<>]", val):          # tokens end up in CSS: never allow breaking out
+            continue
+        TOKENS[key] = val
+
+
+_load_user_theme()
+
+
 def css_variables() -> str:
     body = ";".join(f"--ds-{k}:{v}" for k, v in TOKENS.items())
     return f":root{{{body}}}\n"

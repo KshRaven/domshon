@@ -473,6 +473,18 @@ class AdminTab(QWidget):
         h.addWidget(pw)
         h.addWidget(rot)
         v.addLayout(h)
+        dg = QGroupBox("Connected devices")
+        dl = QVBoxLayout(dg)
+        self.devhead = QLabel("No device has connected yet.")
+        self.devhead.setObjectName("muted")
+        dl.addWidget(self.devhead)
+        self.devices = QListWidget()
+        self.devices.setMaximumHeight(130)
+        dl.addWidget(self.devices)
+        v.addWidget(dg)
+        self.devtimer = QTimer(self)
+        self.devtimer.timeout.connect(self.load_devices)
+        self.devtimer.start(15000)
         tg = QGroupBox("Device tokens")
         tl = QVBoxLayout(tg)
         self.tokens = QListWidget()
@@ -528,6 +540,38 @@ class AdminTab(QWidget):
                 parts.append(f"Disk: {human(du['used'])} used / {human(du['total'])} ({human(du['free'])} free)")
             self.disk.setText("   |   ".join(parts))
         run_async(lambda: (self.client.admin_settings(), self.client.admin_tokens()), done)
+        self.load_devices(True)
+
+    @staticmethod
+    def _ago(sec) -> str:
+        if sec is None:
+            return "never"
+        if sec < 10:
+            return "just now"
+        if sec < 90:
+            return f"{sec}s ago"
+        if sec < 5400:
+            return f"{round(sec / 60)} min ago"
+        if sec < 172800:
+            return f"{round(sec / 3600)} h ago"
+        return f"{round(sec / 86400)} d ago"
+
+    def load_devices(self, force: bool = False):
+        if not force and not self.isVisible():
+            return
+
+        def done(d, err):
+            if err or not d:
+                return
+            self.devices.clear()
+            for t in d["devices"]:
+                state = "LIVE   " if t["live"] else "ONLINE " if t["online"] else "OFFLINE"
+                self.devices.addItem(f"{state}  {t['name']}   {t.get('last_ip') or ''}   {self._ago(t['ago'])}")
+            last = d.get("last")
+            self.devhead.setText(
+                f"{d['online']} online of {d['total']}.  Last connected: {last['name']} ({last.get('last_ip') or '?'}) "
+                f"{self._ago(last['ago'])}" if last else f"{d['online']} online of {d['total']}.  No device has connected yet.")
+        run_async(lambda: self.client.admin_devices(), done)
 
     def apply(self):
         ch = {}

@@ -489,8 +489,45 @@ async function loadAdmin() {
     const du = d.disk || {};
     $("#disk").textContent = du.total ? `Disk: ${fmtSize(du.used)} used / ${fmtSize(du.total)} (${fmtSize(du.free)} free)` : "";
     loadTokens();
+    loadDevices();
     loadStorage();
   } catch (e) { toast(e.message, true); }
+}
+function ago(sec) {
+  if (sec == null) return "never";
+  if (sec < 10) return "just now";
+  if (sec < 90) return sec + "s ago";
+  if (sec < 5400) return Math.round(sec / 60) + " min ago";
+  if (sec < 172800) return Math.round(sec / 3600) + " h ago";
+  return Math.round(sec / 86400) + " d ago";
+}
+function devKind(agent) {
+  agent = agent || "";
+  if (/DomshonAndroid|Android/i.test(agent)) return "Android";
+  if (/Windows/i.test(agent)) return "Windows";
+  if (/Linux|X11/i.test(agent)) return "Linux";
+  if (/Mac/i.test(agent)) return "macOS";
+  if (/python|httpx/i.test(agent)) return "Desktop / CLI";
+  return agent ? agent.slice(0, 24) : "unknown";
+}
+let devTimer = null;
+async function loadDevices() {
+  if (!$("#devRows")) return;
+  try {
+    const d = await api("GET", "/api/admin/devices");
+    const c = $("#devCount");
+    c.textContent = d.online + " online / " + d.total;
+    c.className = "pill " + (d.online ? "on" : "off");
+    const l = d.last;
+    $("#lastDev").textContent = l ? "Last connected: " + l.name + " (" + devKind(l.agent) + (l.last_ip ? ", " + l.last_ip : "") + ") " + ago(l.ago)
+                                  : "No device has connected yet.";
+    $("#devRows").replaceChildren(...d.devices.map((t) => h("tr", {},
+      h("td", {}, h("span", { class: "pill " + (t.online ? "on" : "off") }, t.live ? "LIVE" : t.online ? "ONLINE" : "OFFLINE")),
+      h("td", {}, t.name), h("td", { class: "muted" }, devKind(t.agent)),
+      h("td", { class: "r muted" }, ago(t.ago)))));
+  } catch (e) { /* not admin or offline: ignore */ }
+  clearTimeout(devTimer);
+  if ($("#devRows") && $("#devRows").offsetParent) devTimer = setTimeout(loadDevices, 15000);
 }
 async function loadStorage() {
   try {
@@ -527,13 +564,13 @@ $("#pwForm").onsubmit = async (ev) => {
 async function loadTokens() {
   const d = await api("GET", "/api/admin/tokens");
   $("#tokRows").replaceChildren(...d.tokens.map((t) => h("tr", {},
-    h("td", {}, t.name), h("td", { class: "muted" }, new Date(t.created * 1000).toLocaleDateString()),
+    h("td", {}, t.name + (t.read_only ? " [read-only]" : "")), h("td", { class: "muted" }, new Date(t.created * 1000).toLocaleDateString()),
     h("td", { class: "r" }, h("button", { class: "btn small danger", onclick: async () => { if (!(await confirmBox("REVOKE TOKEN", "Revoke '" + t.name + "'? That device will no longer be able to sign in.", "REVOKE"))) return; try { await api("DELETE", "/api/admin/tokens/" + t.id); } catch (e) { toast(e.message, true); } loadTokens(); } }, "REVOKE")))));
 }
 $("#tokForm").onsubmit = async (ev) => {
   ev.preventDefault();
   try {
-    const d = await api("POST", "/api/admin/tokens", { name: $("#tokName").value || "device" });
+    const d = await api("POST", "/api/admin/tokens", { name: $("#tokName").value || "device", read_only: $("#tokRO").checked });
     const box = $("#newTok"); box.classList.remove("hidden"); box.textContent = "Copy now (shown once): " + d.token;
     $("#tokName").value = ""; loadTokens();
   } catch (e) { toast(e.message, true); }

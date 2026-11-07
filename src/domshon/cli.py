@@ -22,6 +22,30 @@ def human(n: float) -> str:
     return str(n)
 
 
+def _ago(ts) -> str:
+    if not ts:
+        return "never"
+    sec = max(int(time.time() - ts), 0)
+    if sec < 10:
+        return "just now"
+    if sec < 90:
+        return f"{sec}s ago"
+    if sec < 5400:
+        return f"{round(sec / 60)} min ago"
+    if sec < 172800:
+        return f"{round(sec / 3600)} h ago"
+    return f"{round(sec / 86400)} d ago"
+
+
+def _print_devices(d: dict):
+    print(f"{d['online']} online of {d['total']} device(s)")
+    last = d.get("last")
+    print("last connected: " + (f"{last['name']} ({last.get('last_ip') or '?'}) {_ago(last['last_seen'])}" if last else "none yet"))
+    for t in d["devices"]:
+        state = "LIVE   " if t.get("live") else "ONLINE " if t["online"] else "OFFLINE"
+        print(f"  {state} {t['id']}  {t['name']:<20} {t.get('last_ip') or '-':<16} {_ago(t['last_seen'])}")
+
+
 def die(msg: str, code: int = 1):
     print(f"error: {msg}", file=sys.stderr)
     sys.exit(code)
@@ -37,7 +61,12 @@ def cmd_server(a):
     s = Settings()
     if a.sub == "serve":
         from .server import run
-        return run()
+        from .tui import EscStop
+        with EscStop("Server starting. Press Esc (or Ctrl+C) to stop."):
+            try:
+                return run()
+            except KeyboardInterrupt:
+                return
     if a.sub == "show":
         print(json.dumps(s.public(), indent=2))
         print(f"config dir: {s.dir}")
@@ -78,13 +107,18 @@ def cmd_server(a):
     if a.sub == "token":
         ts = TokenStore(s.dir / "tokens.json")
         if a.action == "add":
-            tid, tok = ts.create(a.name or "device")
-            print(f"id: {tid}\ntoken (shown once): {tok}")
+            tid, tok = ts.create(a.name or "device", read_only=a.read_only)
+            print(f"id: {tid}{'  (read-only)' if a.read_only else ''}\ntoken (shown once): {tok}")
         elif a.action == "list":
             for t in ts.list():
-                print(f"{t['id']}  {t['name']}  {time.strftime('%Y-%m-%d', time.localtime(t['created']))}")
+                print(f"{t['id']}  {t['name']}  {time.strftime('%Y-%m-%d', time.localtime(t['created']))}"
+                      f"  last seen {_ago(t.get('last_seen'))}{'  [read-only]' if t.get('read_only') else ''}")
         elif a.action == "rm":
             print("revoked" if ts.revoke(a.name) else "no such token")
+        return
+    if a.sub == "devices":
+        ts = TokenStore(s.dir / "tokens.json")
+        return _print_devices(ts.devices())
 
 
 # ------------------------------------------------------------------ client helpers
@@ -241,12 +275,16 @@ def run_daemon():
     from .client.sync import Runner
     r = Runner(on_status=lambda m: print(time.strftime("%H:%M:%S"), m, flush=True))
     r.start()
-    print("Sync daemon running. Ctrl+C to stop.")
+    from .tui import EscStop
     try:
-        while True:
-            time.sleep(1)
+        with EscStop("Sync daemon running. Press Esc (or Ctrl+C) to stop."):
+            while True:
+                time.sleep(1)
     except KeyboardInterrupt:
+        pass
+    finally:
         r.stop()
+        print("stopped")
 
 
 def cmd_daemon(a):
@@ -283,9 +321,12 @@ def cmd_admin(a):
         print("password updated")
     elif a.sub == "tokens":
         for t in c.admin_tokens():
-            print(f"{t['id']}  {t['name']}  {time.strftime('%Y-%m-%d', time.localtime(t['created']))}")
+            print(f"{t['id']}  {t['name']}  {time.strftime('%Y-%m-%d', time.localtime(t['created']))}"
+                  f"  last seen {_ago(t.get('last_seen'))}")
+    elif a.sub == "devices":
+        _print_devices(c.admin_devices())
     elif a.sub == "token-add":
-        print(c.admin_token_create(a.name)["token"])
+        print(c.admin_token_create(a.name, a.read_only)["token"])
     elif a.sub == "token-rm":
         c.admin_token_revoke(a.id)
     elif a.sub == "rotate":
@@ -339,6 +380,11 @@ def cmd_desktop(a):
         print("installed" if desktop.is_installed() else "not installed")
 
 # ------------------------------------------------------------------ gui / boot
+def cmd_tui(a):
+    from .tui import run_tui
+    sys.exit(run_tui())
+
+
 def cmd_gui(a):
     try:
         from .gui.app import run_gui
@@ -491,6 +537,13 @@ def build_parser() -> argparse.ArgumentParser:
              ["domshon server token add laptop", "domshon server token list", "domshon server token rm 1a2b3c4d"])
     x.add_argument("action", choices=["add", "list", "rm"], help="add = create, list = show, rm = revoke")
     x.add_argument("name", nargs="?", help="add: a label for the device; rm: the token id from 'list'")
+    x.add_argument("--read-only", action="store_true", dest="read_only",
+                   help="add: the device may list and download but never change files")
+
+    _add(ss, "devices", "show connected devices and the last connected device",
+         "Show every device token with its state (ONLINE = seen in the last 2.5 minutes), the last IP and when it\n"
+         "was last seen, plus the most recently connected device. Runs on the server machine.",
+         ["domshon server devices"])
 
     # ---- account
     x = _add(sp, "login", "log this device in to a server",
@@ -604,9 +657,14 @@ def build_parser() -> argparse.ArgumentParser:
     x.add_argument("value", help="new value")
     _add(ss, "passwd", "change the admin password", "Change the admin password (minimum 10 characters).")
     _add(ss, "tokens", "list device tokens", "List the device tokens that can currently sign in.")
+    _add(ss, "devices", "show connected devices and the last connected device",
+         "Live device monitor of the remote server: who is online right now, last IPs, and the last connected device.",
+         ["domshon admin devices"])
     x = _add(ss, "token-add", "create a device token", "Create a token for a new device. It is shown once.",
              ["domshon admin token-add phone"])
     x.add_argument("name", help="a label for the device")
+    x.add_argument("--read-only", action="store_true", dest="read_only",
+                   help="the device may list and download but never change files")
     x = _add(ss, "token-rm", "revoke a device token", "Revoke a token; that device can no longer sync.",
              ["domshon admin token-rm 1a2b3c4d"])
     x.add_argument("id", help="token id from 'domshon admin tokens'")
@@ -709,6 +767,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add(ss, "uninstall", "remove the launcher and its icons", "Remove the launcher and icon files.")
     _add(ss, "status", "say whether the launcher exists", "Print 'installed' or 'not installed'.")
 
+    _add(sp, "tui", "open the interactive terminal app (same as running 'domshon' alone)",
+         "Full-screen menu: arrow keys / numbers / Enter, Esc to go back or stop a running process.\n"
+         "Every option maps to a normal command, so scripts keep working.", ["domshon tui"], cmd_tui)
+    x = _add(sp, "help", "explain a command (same as COMMAND -h)",
+             "Show the help of a command or sub-command.", ["domshon help sync add", "domshon help"], lambda a: p.print_help())
+    x.add_argument("topic", nargs="*", help="command (and sub-command) to explain")
     _add(sp, "gui", "open the desktop app",
          "Open the desktop application (needs the optional desktop support:\n"
          "pip install 'domshon[gui]'). The app also keeps running in the system tray.",
@@ -731,7 +795,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    for st in (sys.stdout, sys.stderr):        # never crash on a legacy console that cannot show ↑ ↓ ● ...
+        try:
+            st.reconfigure(errors="replace")   # type: ignore[attr-defined]
+        except Exception:
+            pass
+    raw = list(sys.argv[1:] if argv is None else argv)
+    if raw[:1] == ["--"]:                      # tolerate:  domshon -- help
+        raw = raw[1:]
+    if raw[:1] == ["help"]:                    # domshon help sync add  ->  domshon sync add -h
+        raw = [t for t in raw[1:] if t not in ("-h", "--help")] + ["-h"]
+    if not raw and argv is None:               # plain `domshon`: the interactive terminal app
+        from .tui import available, run_tui
+        if available():
+            sys.exit(run_tui())
+    args = build_parser().parse_args(raw)
     try:
         args.fn(args)
     except ApiError as e:
